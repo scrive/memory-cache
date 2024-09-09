@@ -1,0 +1,46 @@
+cabal-version:      3.0
+name:               memory-cache
+version:            1.0.0.0
+synopsis:           In-memory LRU cache
+description:        In-memory LRU cache for storing results of monadic actions.
+homepage:           https://github.com/scrive/memory-cache
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Scrive AB
+maintainer:         Andrzej Rybczak <andrzej@rybczak.net>
+copyright:          Scrive AB
+category:           Data
+build-type:         Simple
+tested-with:        GHC == { 8.10.7, 9.0.2, 9.2.8, 9.4.8, 9.6.6, 9.8.2, 9.10.1 }
+extra-doc-files:    CHANGELOG.md
+
+bug-reports:   https://github.com/scrive/memory-cache/issues
+source-repository head
+  type:             git
+  location:         https://github.com/scrive/memory-cache.git
+
+common language
+  ghc-options: -Wall -Wextra -Werror=prepositive-qualified-module
+
+  default-language: Haskell2010
+
+  default-extensions: FlexibleContexts
+                    , LambdaCase
+                    , ImportQualifiedPost
+                    , TypeApplications
+
+library
+  import:           language
+
+  exposed-modules:  Data.MemCache
+
+  build-depends:    base >= 4.14 && < 5
+                  , deepseq >= 1.4.3.0
+                  , hashable >= 1.4.3.0
+                  , monad-control >= 1.0
+                  , psqueues >= 0.2.7.0
+                  , strict-mutable-base >= 1.1.0.0
+                  , transformers-base >= 0.4.6
+                  , unordered-containers >= 0.2.18
+
+  hs-source-dirs:   src
