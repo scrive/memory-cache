@@ -59,7 +59,7 @@ new sizeFun sizeLimit =
 -- multiple threads try to access a key that doesn't exist in parallel, the
 -- constructing action will be run only once.
 --
--- /Note:/ returned 'Bool' signifies whether the object was constructed.
+-- /Note:/ returned 'Bool' signifies whether the object was in cache.
 --
 -- __Warning:__ for a given key, the constructing action needs to always return
 -- the same result.
@@ -106,7 +106,7 @@ fetch (MemCache mv) key construct = do
               )
 
     case eel of
-      Right el -> unlift $ pure (el, False)
+      Right el -> unlift $ pure (el, True)
       Left (mvEl, mvAlreadyThere) -> do
         -- If we got an existing MVar, wait for its result. Otherwise run
         -- constructing action and update cache accordingly.
@@ -118,7 +118,7 @@ fetch (MemCache mv) key construct = do
                   -- If the thread that was supposed to construct the value
                   -- failed for some reason, let's try ourselves.
                   loop
-                Just value -> unlift $ pure (value, False)
+                Just value -> unlift $ pure (value, True)
           else do
             evalue <- (`onException` removeInProgress mvEl) $ do
               -- Construct the value and update cache accordingly.
@@ -132,7 +132,7 @@ fetch (MemCache mv) key construct = do
                 v <- liftBase . evaluate . force =<< construct
                 liftBase $ do
                   putMVar' mvEl $ Just v
-                  pure (v, True)
+                  pure (v, False)
               modifyMVar'_ mv $ \mc ->
                 tryReadMVar' mvEl >>= \case
                   Nothing -> do
@@ -172,7 +172,7 @@ fetch (MemCache mv) key construct = do
               Just (_, _, minEl, tidiedCache) -> go tidiedCache $ size - mcSizeFun mc minEl
 {-# INLINEABLE fetch #-}
 
--- | Fetch an object from cache or construct it if it's not there.
+-- | Variant of 'fetch' that doesn't return a 'Bool'.
 fetch_
   :: (Ord k, Hashable k, NFData v, MonadBaseControl IO m)
   => MemCache k v
