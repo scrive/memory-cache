@@ -9,7 +9,7 @@ module Data.MemCache
   , invalidate
   ) where
 
-import Control.Concurrent.MVar.Strict
+import Control.Concurrent.MVar.Strict qualified as S
 import Control.DeepSeq
 import Control.Exception
 import Control.Monad
@@ -26,12 +26,12 @@ data MemCache_ k v = MemCache_
   , mcSizeLimit :: Int
   , mcCurrentSize :: Int
   , mcTick :: Word64
-  , mcInProgress :: HM.HashMap k (MVar' (Maybe v))
+  , mcInProgress :: HM.HashMap k (S.MVar (Maybe v))
   , mcCache :: Q.HashPSQ k Word64 v
   }
 
 -- | In-memory LRU cache for storing results of monadic actions.
-newtype MemCache k v = MemCache (MVar' (MemCache_ k v))
+newtype MemCache k v = MemCache (S.MVar (MemCache_ k v))
 
 -- | Create a new 'MemCache'.
 new
@@ -44,7 +44,7 @@ new
 new sizeFun sizeLimit =
   liftBase $
     MemCache
-      <$> newMVar'
+      <$> S.newMVar
         MemCache_
           { mcSizeFun = sizeFun
           , mcSizeLimit = sizeLimit
@@ -89,7 +89,7 @@ fetch (MemCache mv) key construct = do
     -- there, bump its priority and return it. Otherwise either check whether
     -- the value is already being computed and return associated MVar or create
     -- a new one.
-    eel <- modifyMVar' mv $ \mc -> release $ do
+    eel <- S.modifyMVar mv $ \mc -> release $ do
       case Q.alter (lookupAndIncreasePriorityTo $ mcTick mc) key $ mcCache mc of
         (Just el, updatedCache) -> do
           pure
@@ -99,7 +99,7 @@ fetch (MemCache mv) key construct = do
         (Nothing, _) -> case key `HM.lookup` mcInProgress mc of
           Just mvEl -> pure (mc, Left (mvEl, True))
           Nothing -> do
-            mvEl <- newEmptyMVar'
+            mvEl <- S.newEmptyMVar
             pure
               ( mc {mcInProgress = HM.insert key mvEl $ mcInProgress mc}
               , Left (mvEl, False)
@@ -113,7 +113,7 @@ fetch (MemCache mv) key construct = do
         if mvAlreadyThere
           then
             release $
-              readMVar' mvEl >>= \case
+              S.readMVar mvEl >>= \case
                 Nothing -> do
                   -- If the thread that was supposed to construct the value
                   -- failed for some reason, let's try ourselves.
@@ -131,12 +131,12 @@ fetch (MemCache mv) key construct = do
               evalue <- try @SomeException . release . unlift $ do
                 v <- liftBase . evaluate . force =<< construct
                 liftBase $ do
-                  putMVar' mvEl $ Just v
+                  S.putMVar mvEl $ Just v
                   pure (v, False)
-              modifyMVar'_ mv $ \mc ->
-                tryReadMVar' mvEl >>= \case
+              S.modifyMVar_ mv $ \mc ->
+                S.tryReadMVar mvEl >>= \case
                   Nothing -> do
-                    putMVar' mvEl Nothing
+                    S.putMVar mvEl Nothing
                     pure $ mc {mcInProgress = HM.delete key $ mcInProgress mc}
                   Just (Just value) -> do
                     pure $
@@ -158,8 +158,8 @@ fetch (MemCache mv) key construct = do
     removeInProgress mvEl = uninterruptibleMask_ $ do
       -- Signal other threads waiting for the MVar and remove it from cache.
       -- UninterruptibleMask is there since modifyMVar_ might block.
-      void $ tryPutMVar' mvEl Nothing
-      modifyMVar'_ mv $ \mc -> do
+      void $ S.tryPutMVar mvEl Nothing
+      S.modifyMVar_ mv $ \mc -> do
         pure mc {mcInProgress = HM.delete key $ mcInProgress mc}
 
     tidyCache mc = go (mcCache mc) (mcCurrentSize mc)
@@ -190,7 +190,7 @@ invalidate
   -> k
   -- ^ The key to invalidate.
   -> m ()
-invalidate (MemCache mv) key = liftBase . modifyMVar'_ mv $ \mc ->
+invalidate (MemCache mv) key = liftBase . S.modifyMVar_ mv $ \mc ->
   case Q.deleteView key $ mcCache mc of
     Nothing -> pure mc
     Just (_, value, newCache) -> do
