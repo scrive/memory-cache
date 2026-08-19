@@ -22,12 +22,12 @@ import Data.Hashable
 import Data.Word
 
 data MemCache_ k v = MemCache_
-  { mcSizeFun :: v -> Int
-  , mcSizeLimit :: Int
-  , mcCurrentSize :: Int
-  , mcTick :: Word64
-  , mcInProgress :: HM.HashMap k (S.MVar (Maybe v))
-  , mcCache :: Q.HashPSQ k Word64 v
+  { mcSizeFun :: !(v -> Int)
+  , mcSizeLimit :: !Int
+  , mcCurrentSize :: !Int
+  , mcTick :: !Word64
+  , mcInProgress :: !(HM.HashMap k (S.MVar (Maybe v)))
+  , mcCache :: !(Q.HashPSQ k Word64 v)
   }
 
 -- | In-memory LRU cache for storing results of monadic actions.
