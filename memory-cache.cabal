@@ -25,21 +25,27 @@ common language
   default-language: Haskell2010
 
   default-extensions: FlexibleContexts
+                    , FlexibleInstances
                     , LambdaCase
                     , ImportQualifiedPost
+                    , ScopedTypeVariables
+                    , TupleSections
                     , TypeApplications
+                    , UndecidableInstances
 
 library
   import:           language
 
   exposed-modules:  Data.MemCache
+                    Data.MemCache.Internal
 
   build-depends:    base >= 4.14 && < 5
                   , deepseq >= 1.4.3.0
                   , hashable >= 1.4.3.0
-                  , monad-control >= 1.0
+                  , monad-control >= 1.0.3
                   , psqueues >= 0.2.7.0
                   , strict-mutable-base >= 2.0.0.0 && < 3
+                  , transformers >= 0.5.6
                   , transformers-base >= 0.4.6
                   , unordered-containers >= 0.2.18
 
