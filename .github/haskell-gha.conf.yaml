@@ -1,0 +1,6 @@
+branches:
+- master
+fourmolu:
+  version: 0.21.0.0
+hlint:
+  version: '3.10'
