@@ -199,6 +199,11 @@ jobs:
       run: |
         cabal build all
 
+    - name: Run the tests
+      working-directory: ${{ runner.temp }}/haskell-gha
+      run: |
+        cabal test all --test-show-details=direct
+
     - name: Check the packages
       working-directory: ${{ runner.temp }}/haskell-gha
       run: |
