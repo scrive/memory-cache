@@ -22,6 +22,10 @@ concurrencyTests =
     , testCase "construction short-circuits" test_constructionShortCircuits
     , testCase "constructing thread is killed" test_constructingThreadKilled
     , testCase "cancelled fetches" test_cancelledFetches
+    , testCase "invalidation during a construction" test_invalidationDuringConstruction
+    , testCase "failure after an invalidation" test_failureAfterInvalidation
+    , testCase "waiting fetch after an invalidation" test_waitingFetchAfterInvalidation
+    , testCase "fulfillment after an invalidation" test_fulfillmentAfterInvalidation
     ]
 
 test_constructionRunsOnce :: Assertion
@@ -115,3 +119,102 @@ test_cancelledFetches = do
     cancel thread
     -- Blocks if the key stays reserved.
     void $ fetch cache key (pure 0)
+
+-- | The value of a construction that started before an invalidation isn't
+-- cached. Only the constructing fetch and the fetches that waited for it get
+-- it.
+test_invalidationDuringConstruction :: Assertion
+test_invalidationDuringConstruction = do
+  cache <- newCache (const 1) 10
+  started <- newEmptyMVar
+  gate <- newEmptyMVar
+  constructing <- async . fetch cache 1 $ do
+    putMVar started ()
+    takeMVar gate
+    pure 2
+  takeMVar started
+  waiting <- async $ fetch cache 1 (pure 3)
+  waitUntilBlocked waiting
+  invalidate cache 1
+  fetch cache 1 (pure 4) >>= assertEqual "Fetch after invalidation" (4, False)
+  putMVar gate ()
+  wait constructing >>= assertEqual "Constructing fetch" (2, False)
+  wait waiting >>= assertEqual "Waiting fetch" (2, True)
+  fetch cache 1 (pure 5) >>= assertEqual "Later fetch" (4, True)
+
+-- | A construction that started before an invalidation fails while a later
+-- construction runs. The key must stay reserved by the later one.
+test_failureAfterInvalidation :: Assertion
+test_failureAfterInvalidation = do
+  cache <- newCache (const 1) 10
+  startedEarlier <- newEmptyMVar
+  gateEarlier <- newEmptyMVar
+  earlier <- async . fetch cache 1 $ do
+    putMVar startedEarlier ()
+    takeMVar gateEarlier
+    throwIO $ ErrorCall "Construction failed"
+  takeMVar startedEarlier
+  invalidate cache 1
+  startedLater <- newEmptyMVar
+  gateLater <- newEmptyMVar
+  later <- async . fetch cache 1 $ do
+    putMVar startedLater ()
+    takeMVar gateLater
+    pure 2
+  takeMVar startedLater
+  putMVar gateEarlier ()
+  void $ waitCatch earlier
+  waiting <- async $ fetch cache 1 (pure 3)
+  waitUntilBlocked waiting
+  putMVar gateLater ()
+  wait later >>= assertEqual "Later construction" (2, False)
+  wait waiting >>= assertEqual "Waiting fetch" (2, True)
+  fetch cache 1 (pure 4) >>= assertEqual "Later fetch" (2, True)
+
+-- | A construction that started before an invalidation fails. The fetch that
+-- waited for it must construct the value itself.
+test_waitingFetchAfterInvalidation :: Assertion
+test_waitingFetchAfterInvalidation = do
+  cache <- newCache (const 1) 10
+  started <- newEmptyMVar
+  gate <- newEmptyMVar
+  constructing <- async . fetch cache 1 $ do
+    putMVar started ()
+    takeMVar gate
+    throwIO $ ErrorCall "Construction failed"
+  takeMVar started
+  waiting <- async $ fetch cache 1 (pure 2)
+  waitUntilBlocked waiting
+  invalidate cache 1
+  putMVar gate ()
+  void $ waitCatch constructing
+  wait waiting >>= assertEqual "Waiting fetch" (2, False)
+
+-- | A construction that started before an invalidation finishes while a later
+-- construction runs. The value of the later construction must be cached.
+test_fulfillmentAfterInvalidation :: Assertion
+test_fulfillmentAfterInvalidation = do
+  cache <- newCache (const 1) 10
+  startedEarlier <- newEmptyMVar
+  gateEarlier <- newEmptyMVar
+  earlier <- async . fetch cache 1 $ do
+    putMVar startedEarlier ()
+    takeMVar gateEarlier
+    pure 2
+  takeMVar startedEarlier
+  invalidate cache 1
+  startedLater <- newEmptyMVar
+  gateLater <- newEmptyMVar
+  later <- async . fetch cache 1 $ do
+    putMVar startedLater ()
+    takeMVar gateLater
+    pure 3
+  takeMVar startedLater
+  putMVar gateEarlier ()
+  wait earlier >>= assertEqual "Earlier construction" (2, False)
+  waiting <- async $ fetch cache 1 (pure 4)
+  waitUntilBlocked waiting
+  putMVar gateLater ()
+  wait later >>= assertEqual "Later construction" (3, False)
+  wait waiting >>= assertEqual "Waiting fetch" (3, True)
+  fetch cache 1 (pure 5) >>= assertEqual "Later fetch" (3, True)

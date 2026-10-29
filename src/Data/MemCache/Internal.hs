@@ -18,6 +18,7 @@ module Data.MemCache.Internal
 import Control.Concurrent.MVar.Strict qualified as S
 import Control.DeepSeq
 import Control.Exception
+import Control.Monad
 import Control.Monad.Base
 import Data.HashMap.Strict qualified as HM
 import Data.HashPSQ qualified as Q
@@ -70,7 +71,7 @@ new sizeFun sizeLimit =
 
 -- | Result of a lookup in the cache.
 data LookupResult k v
-  = -- | The value is in the cache.
+  = -- | The value is in the cache, or another thread constructed it.
     Hit v
   | -- | The key is reserved for the caller, who needs to construct the value
     -- and pass it to 'Data.MemCache.fulfillReservation'.
@@ -150,42 +151,48 @@ withLookupResult cache@(MemCache mv) key f =
       S.tryReadMVar (rvValue reservation) >>= \case
         Just _ -> pure ()
         -- If modifyMVar_ blocks and gets interrupted, the key stays reserved.
-        Nothing -> uninterruptibleMask_ . S.modifyMVar_ mv $ \mc ->
-          S.tryPutMVar (rvValue reservation) Nothing >>= \case
-            False -> pure mc
-            True -> pure mc {mcInProgress = HM.delete key $ mcInProgress mc}
+        Nothing -> uninterruptibleMask_ . S.modifyMVar_ mv $ \mc -> do
+          void $ S.tryPutMVar (rvValue reservation) Nothing
+          pure $
+            if holdsReservation mc reservation
+              then mc {mcInProgress = HM.delete key $ mcInProgress mc}
+              else mc
 {-# INLINEABLE withLookupResult #-}
 
 -- | Fully evaluate a constructed value, put it in the cache and pass it to the
 -- threads that wait for it. Return the evaluated value.
 --
--- If the reservation is already fulfilled, or the callback of
--- 'withLookupResult' has exited, the cache and the waiting threads stay
--- unchanged.
+-- If the key was invalidated after the reservation, the value isn't cached, but
+-- the waiting threads still get it. If the reservation is already fulfilled,
+-- or the callback of 'withLookupResult' has exited, the cache and the waiting
+-- threads stay unchanged.
 fulfillReservation
   :: (Ord k, Hashable k, NFData v)
   => Reservation k v
   -> v
   -> IO v
-fulfillReservation (Reservation mv key mvValue) value = do
+fulfillReservation reservation@(Reservation mv key mvValue) value = do
   forcedValue <- evaluate $ force value
   -- An exception after the waiting threads get the value would roll back the
   -- cache state, so the key would stay reserved with a value. Hence the mask,
   -- and the evaluation of the new state before the waiting threads get it, in
   -- case the sizing function throws.
-  S.modifyMVarMasked_ mv $ \mc -> do
-    newMc <-
-      evaluate $
-        tidyCache
-          mc
-            { mcCurrentSize = mcCurrentSize mc + mcSizeFun mc forcedValue
-            , mcTick = mcTick mc + 1
-            , mcInProgress = HM.delete key $ mcInProgress mc
-            , mcCache = Q.insert key (mcTick mc) forcedValue $ mcCache mc
-            }
-    S.tryPutMVar mvValue (Just forcedValue) >>= \case
-      False -> pure mc
-      True -> pure newMc
+  S.modifyMVarMasked_ mv $ \mc ->
+    if holdsReservation mc reservation
+      then do
+        newMc <-
+          evaluate $
+            tidyCache
+              mc
+                { mcCurrentSize = mcCurrentSize mc + mcSizeFun mc forcedValue
+                , mcTick = mcTick mc + 1
+                , mcInProgress = HM.delete key $ mcInProgress mc
+                , mcCache = Q.insert key (mcTick mc) forcedValue $ mcCache mc
+                }
+        S.tryPutMVar mvValue (Just forcedValue) >>= \case
+          False -> pure mc
+          True -> pure newMc
+      else mc <$ S.tryPutMVar mvValue (Just forcedValue)
   pure forcedValue
   where
     tidyCache :: (Ord k, Hashable k) => MemCacheState k v -> MemCacheState k v
@@ -203,19 +210,30 @@ fulfillReservation (Reservation mv key mvValue) value = do
 {-# INLINEABLE fulfillReservation #-}
 
 -- | Invalidate a key in cache.
+--
+-- If a value for the key is under construction, it won't be cached. The
+-- constructing fetch and the fetches that already wait for it still get it. If
+-- the construction fails, the waiting fetches try again. Later fetches
+-- construct the value again.
 invalidate
   :: (Ord k, Hashable k)
   => MemCache k v
   -> k
   -- ^ The key to invalidate.
   -> IO ()
-invalidate (MemCache mv) key = S.modifyMVar_ mv $ \mc ->
-  case Q.deleteView key $ mcCache mc of
-    Nothing -> pure mc
-    Just (_, value, newCache) -> do
-      pure $
-        mc
-          { mcCurrentSize = mcCurrentSize mc - mcSizeFun mc value
-          , mcCache = newCache
-          }
+invalidate (MemCache mv) key = S.modifyMVar_ mv $ \mc -> do
+  let unreserved = mc {mcInProgress = HM.delete key $ mcInProgress mc}
+  pure $ case Q.deleteView key $ mcCache mc of
+    Nothing -> unreserved
+    Just (_, value, newCache) ->
+      unreserved
+        { mcCurrentSize = mcCurrentSize mc - mcSizeFun mc value
+        , mcCache = newCache
+        }
 {-# INLINEABLE invalidate #-}
+
+-- | Whether the key of the reservation is still reserved by it. It isn't once
+-- the reservation is finished or the key is invalidated.
+holdsReservation :: (Eq k, Hashable k) => MemCacheState k v -> Reservation k v -> Bool
+holdsReservation mc reservation =
+  HM.lookup (rvKey reservation) (mcInProgress mc) == Just (rvValue reservation)

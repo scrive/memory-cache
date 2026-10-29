@@ -30,7 +30,8 @@ import Data.MemCache.Internal qualified as I
 -- constructing action will be run only once. This doesn't hold if the instance
 -- disables caching.
 --
--- /Note:/ returned 'Bool' signifies whether the object was in cache.
+-- /Note:/ returned 'Bool' signifies whether the call didn't construct the
+-- object, because it was in cache or another thread constructed it.
 --
 -- /Note:/ the returned object is fully evaluated, unless the instance disables
 -- caching.
@@ -77,6 +78,11 @@ class Monad m => MonadMemCache m where
   fulfillReservation :: (Ord k, Hashable k, NFData v) => I.Reservation k v -> v -> m v
 
   -- | Invalidate a key in cache.
+  --
+  -- If a value for the key is under construction, it won't be cached. The
+  -- constructing fetch and the fetches that already wait for it still get it.
+  -- If the construction fails, the waiting fetches try again. Later fetches
+  -- construct the value again.
   invalidate :: (Ord k, Hashable k) => I.MemCache k v -> k -> m ()
 
 instance MonadMemCache IO where
