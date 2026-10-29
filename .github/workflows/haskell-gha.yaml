@@ -12,6 +12,7 @@ on:
   push:
     branches:
     - master
+    - monad-memcache
   pull_request:
   merge_group:
   workflow_dispatch:
